@@ -6,10 +6,12 @@
 \usepackage{hyperref}
 \usepackage{csquotes}
 \usepackage{float}
+\usepackage{placeins}
 
 \title{\enquote{WolkeSieben} - die Cloud-Native Tiervermittlung}
 \author{Klaus Fuhrmeister, Arne Müller, Niklas Sauer, Savina Diez}
 \date{Februar 2021}
+
 
 \begin{document}
 
@@ -80,12 +82,12 @@ Ursprünglich sollte sich die Architektur der einzelnen Microservices am Domain-
 	für die Anbindung an externe Systeme (z.B. Datenbanken)
 \end{description}
 
-\begin{figure}[htbp]
-\centering
-\label{fig:domaindrivendesign}
-\includegraphics[width=0.5\textwidth]{images/domain-driven-design}
-\caption{Domain-Driven Design}
-\end{figure}
+%\begin{figure}[htbp]
+%\centering
+%\label{fig:domaindrivendesign}
+%\includegraphics[width=0.5\textwidth]{images/domain-driven-design}
+%\caption{Domain-Driven Design}
+%\end{figure}
 
 Im Laufe der Entwicklung stellte sich heraus, dass sich das Pattern, welches eigentlich für DotNet-Anwendungen konzipiert wurde, nicht so einfach auf die von uns verwendeten Programmiersprachen und Frameworks übertragen lässt. 
 
@@ -170,6 +172,7 @@ Der App-Microservice stellt den Großteil der Backend-Funktionen unserer Anwendu
 
 
 \subsection{Technologie}
+\label{sec:app-tech}
 
 Die Programmiersprache Python ergab sich aus der Wahl des Web-Frameworks. Django bietet einige entscheidende Bausteine, welche die Entwickelung von Web-Anwendungen vereinfachen und von denen auch wir großen Gebrauch gemacht haben. 
 
@@ -181,6 +184,7 @@ Daneben haben sich die eingebauten Konzepte, die Anwendung produktionsreif zu ma
 
 
 \subsection{Datenbank}
+\label{sec:app-database}
 
 Entsprechend dem Polyglott Persistency Prinzips, setzt der App Microservice auf eine Cloud SQL Instanz für relationale Daten, sowie einen Cloud Storage Bucket für Medien sonstiger Art (z.B. Fotos und Videos). Hinsichtlich dem SQL-Datenbank Typen, genügt MySQL (Version 8) unseren Anforderungen. 
 
@@ -190,73 +194,156 @@ An dieser Stelle sollte erwähnt werden, dass zum Zeitpunkt der Entwicklung kein
 \subsection{Authentifizierung}
 \label{sec:app-backend-auth}
 
-Wie bereits in \autoref{sec:frontend-auth} dargelegt, 
+Wie bereits in \autoref{sec:frontend-auth} dargelegt, knüpft die Nutzer-Authentifizierung an den OAuth 2.0 Flow eines jeweiligen Social Provider. Um den Login-Vorgang abzuschließen, muss das Frontend einen weiteren Request an den App-Microservice stellen, um das ID Token des Social Provider gegen ein neues JWT zu tauschen, das von allen Services dieses Projektes akzeptiert wird. Dies hat zwei entscheidende Vorteile:
 
-Bei der Nutzerauthentifizierung haben wir uns dazu entschieden, selbst keine Nutzerkonten zu verwalten und so Entwicklungszeit zu sparen, die wir in die eigentliche Anwendung stecken konnten. Stattdessen authentifizieren wird unsere Nutzer über Google OAuth und JWT-Tokens. Dabei verlassen wir uns nur bei der Anmeldung auf die von Google ausgestellten Token. Der App-Microservice legt nach der Bestätigung der Identität ein eigenes JWT-Token an, welches daraufhin verwendet wird, um einen Nutzer zwischen unseren Microservices zu authentifizieren.
+\begin{description}
+	\item[Universally Unique Identifier (UUID)]
+	\hfill \\
+	Die im ID Token eines jeweiligen Social Provider gelistete Benutzer Identifikation (\enquote{\texttt{sub}} Payload-Claim) ist streng genommen nur in der Domäne des jeweiligen Social Provider eindeutig. Das heißt, ein Benutzer mit der Google ID \enquote{\texttt{xyz}} hat nicht zwangsläufig die gleiche ID bei Facebook und Co. Soll jedoch eine künftige Integration mit weiteren Single Sign-On Anbietern folgen, muss eine in der Domäne unserer Tiervermittlung eindeutige Benutzerkennung eingeführt werden.
+	
+	Zu diesem Zwecke, speichert der App-Microservice beim ersten Login mit dem ID Token eines jeweiligen Providers (z.B. \texttt{GET /api/token/google}) welche Kennung der Nutzer bei diesem Provider hat, legt zugleich aber auch für den Nutzer eine eindeutige UUID an, sodass ein Lookup in beide Richtungen künftig möglich ist. 
+	
+	\item[Custom Claims]
+	\hfill \\
+	Ein Nebeneffekt von eigens ausgestellten JWTs ist die Tatsache, dass die Payload (\enquote{Claims}) der Tokens selbst festgelegt werden kann. Dies ist besonders für die Authorisierung anhand von \enquote{Scopes} relevant.
+\end{description}
+
+Damit dieses Token auch von den anderen Microservices zur Authentifizierung verwendet werden kann, exponiert der App-Microservice einen öffentlichen Endpunkt (\texttt{POST /api/token/verify}) mit dem die Gültigkeit eines solchen JWTs überprüft werden kann. In Produktion sollte diese Methode allerdings nicht verwendet werden, da sie unnötig zur Anfragenlast beiträgt. Stattdessen sollte lediglich der Public Key des Schlüsselpaars, mit dem die Signatur des JWTs erstellt wurde, öffentlich gemacht werden, sodass die anderen Services diesen initial laden und alle weiteren Schritte zum Prüfen der Gültigkeit lokal ausführen. 
 
 
 \subsection{Deployment}
+\label{sec:app-deployment}
+
+Schon bevor das Deployment Target (App Engine, Cloud Run, Kubernetes etc.) der einzelnen Microservices festgesetzt wurde, hat man sich darauf verständigt möglichst alle Dienste auf Container-Basis zu entwickeln. Das bedeutet, Code wurde prinzipiell immer gegen ein Linux-basiertes Container Image gebaut und getestet, mit dem garantiert werden kann, dass alle Entwickler die gleiche Entwicklungsumgebung vorliegen haben und Builds, sowie Fehler, leicht reproduzierbar sind, unabhängig von der zugrunde liegenden Hardware. 
+
+Es bietet sich daher an, auch ein Subset der Microservices als Container bereitzustellen. Dies ist auch der Fall für den App-Microservice.  Für das Container-basierte Deployment gibt es auf der Google Cloud Platform neben Kubernetes auch eine simplere Variante, nämlich Cloud Run. Beide sind in der Lage, basierend auf einer Deployment Spezifikation, die Container Anzahl entsprechend der Anfragelast zu skalieren.
+
+Auch an dieser Stelle sei eine Limitierung der Google Cloud Plattform (vgl. \autoref{sec:app-database}) zu nennen. Eine Schwierigkeit, die uns beim Bereitstellen der Microservices, die Cloud Run benutzen, aufgefallen ist, stellt die fehlende Möglichkeit dar, eine SSH-Sitzung in einem laufenden Container zu starten. Somit kann eine Fehleranalyse nur schwer stattfinden. Log-basiertes Debugging kann nicht alle Problemquellen identifizieren. Uns ist weiterhin bekannt, dass andere Cloud-Anbieter diese Möglichkeit sehr wohl zur Verfügung stellen. Genau genommen bietet Google das mit seinem Kubernetes Dienst bereits indirekt an (\texttt{kubectl exec ...}). Zudem basiert Cloud Run auf Kubernetes. Dies kann sicherlich einen Einfluss auf die Wahl der Cloud-Plattform haben.
 
 
-Des Weiteren haben wir uns dazu entschieden, den App-Microservice mit Cloud Run in Docker-Containern bereitzustellen. Indem wir auf Container zurückgreifen, machen wir uns die flexible Struktur der Cloud-Umgebung zu Nutzen, in der Anwendungen ortstransparent bereitgestellt werden können. Durch die Verwendung von Containern machen wir uns von der zu Grunde liegenden Hardware unabhängig und können die Möglichkeiten der Cloud voll ausschöpfen. Weiterhin erledigt sich das Thema Skalierbarkeit so quasi von selbst, da das System auf Seiten des Anbieters in der Lage ist, jederzeit neue Container zu starten oder zu stoppen, um mit den Anforderungen des eingehenden Datenverkehrs mithalten zu können.
+\section{Chat- und Like-Microservices} % Nik
 
-\section{Like- und Chat-Microservices} % Nik
-% Framework: NestJS (Node.JS) > comparison to Django
-% Monorepo setup with separate deployment targets
-% Authentication through app microservice > should use public key cryptography in future to avoid unnecessary REST calls
+Die Komponenten, die das Chatten zwischen Nutzern sowie das Liken von Angeboten ermöglichen, werden in diesen Abschnitt gemeinsam gelistet, da sie im Prinzip der gleichen Quelle entspringen, nämlich einem Monorepo. 
 
-\subsection{Like-Microservice}
-% Deployment target: App Engine > comparison to Cloud Run
-% Storage: BigTable (emulator available but not fully usable)
+Generell lässt sich sagen, dass beide dieser Services aus Gründen der Optimierung entstanden sind.
+
+\subsection{Monorepo Strategie}
+
+Mono-Repositories beschreiben eine Strategie bei der mehrere Projekte im gleichen versionierten Repository entwickelt werden. Dies bietet sich besonders bei Projekten an, die auf den gleichen Technologie-Stack setzen und hierdurch von einem vereinfachtem Dependency Management und leichterer Code Wiederverwendung profitieren können.
+
+Ein solcher Ansatz erzwingt dennoch nicht das gleiche Deployment Target oder generell den gleichen Build Prozess. In diesem Falle wurden die Chat- und Like-Microservices als zwei Teilbereiche einer einzigen API konstruiert, die jedoch durch die selbst entworfene Plugin Architektur getrennt aktiviert und somit bereitgestellt werden können.
+
+\subsection{Technologie}
+
+Verglichen mit dem App-Microservice (siehe \autoref{sec:app-tech}), ist die Wahl der Programmiersprache nicht vom Framework geprägt, sondern von der Sprache selbst. Gerade hinsichtlich der Echtzeit-Kommunikation mit Browsern per WebSockets, ein Core-Feature des Chat-Microservices, hat sich JavaScript als Backend-Pendant über die Jahre bewährt. 
+
+Auf der anderen Seite, gibt es, vergleichen mit Django, im NodeJS Umfeld viel seltener Frameworks, die eine solch rigide Struktur ansetzen. Das wohl bekannteste, Express, ist absolut leichtgewichtig und eher als Routing Mechanismus mit Middleware zu verstehen. Für größere Projekte ist dies in unseren Augen aber auf lange zeit kontraproduktiv. Deshalb, haben wir glücklicherweise mit NestJS ein Framework gefunden, das den bewährten Konzepten von Angular folgt. 
+
+\subsection{Authentifizierung}
+
+Die Authentifizierung setzt auf den in \autoref{sec:app-backend-auth} beschriebenen Mechanismus, um die vom App-Microservice ausgestellten JWTs zu verifizieren und danach die Identität des Nutzers zu ermitteln. Ein Spezialfall stellt die Authentifizierung des Echtzeit-Chats dar, wie in \autoref{sec:chat-microservice} ausgewiesen wird.
+
+
 
 \subsection{Chat-Microservice}
+\label{sec:chat-microservice}
+
 % Deployment target: Cloud Run
 % Storage: Firestore (emulator available)
 % WebSocket authentication > not usable in upgrade request due to limited browser WebSocket API
 
+
+\subsubsection{Datenbank}
+
+Die Besonderheit des Chats liegt zum einen an der Anforderung diesen in Echtzeit anbieten zu können, zum Anderen, aber auch darin, dass sich das Format der Nachrichten populärer Messenger bekanntlich stark geändert hat. So ist es beispielsweise inzwischen möglich per WhatsApp sowohl reine Textnachrichten, als auch Links, Bilder oder Dokumente zu versenden. Keiner der Nachrichten-Typen lässt sich sinnvoll durch einen relationalen Datenbank Eintrag abbilden. Um auch unser Portal auf diesen Umstand vorzubereiten, setzen wir mit dem Chat-Microservice auf eine noSQL Datenbank, dem Google Firestore. Es handelt sich hierbei um eine Dokumenten-basierte Datenbank, die in Kollektionen aufgeteilt ist und im Grunde genommen JSON-Dokumente von max 1 MB speichert. 
+
+
+\subsubsection{Echtzeit-Chat}
+
+\paragraph{WebSockets}
+
+Effektiv unterliegt jeder dem für einen Browser bestimmten Nachrichtenverkehr dem HTTP Protokoll. Somit kommen auch nur eine Reihe von Technologien in Frage um Nachrichten in Echtzeit an Webseiten zu übertragen. Diese lauten:
+
+\begin{itemize}
+  \item HTTP (Long-)Polling
+  \item HTTP Streaming
+  \item Server-Sent Events
+  \item WebSockets
+\end{itemize}
+
+Allerdings lassen sich nur mit WebSockets bidirektionaler Datenströme abbilden. Deshalb setzt dieser Teil der Anwendung auf diesen Transportkanal, der im NestJS Framework durch Gateways abstrahiert ist.
+
+
+\paragraph{Skalierung}
+
+Da WebSockets eine persistente Verbindung zwischen Client und Server einrichtigen, d.h. die Verbindung nicht wie traditionell nach jeder Anfrage schließen, sind besondere Vorkehrungen notwendig, um die Applikation horizontal zu skalieren. Denn es ist denkbar, dass ein Nutzer A, der mit Server-Instanz X verbunden ist, einem Nutzer B, der wiederum mit Server-Instanz Y in Verbindung steht, in Echtzeit eine Nachricht senden möchte. Dies bedarf der Kommunikation zwischen den horizontal skalierten Server-Instanzen X und Y. Hierfür setzt der Chat-Microservice auf Google Memorystore, einer In-Memory Datenbank, die zu 100\% dem Redis Protokoll folgt.
+
+\paragraph{Authentifizierung}
+
+WebSockets sind einzig und allein mit HTTP verwandet, in das dessen Handshake als eine Aufforderung zum WebSocket Upgrade verstanden werden kann. Das erlaubt es WebSockets mit traditioneller Web-Infrastruktur zu koexistieren. Theoretisch könnte über die Header der Upgrade Anfrage auch eine Authentifizierung implementiert werden, so wie in \autoref{sec:frontend-auth} beschrieben. Aus unerklärlichen Gründen bietet jedoch die Browser WebSocket Schnittstelle keine Möglichkeit Header zu definieren. Das funktioniert sehr wohl aus Sicht eines Backends. Deshalb implementiert dieser Teil der Anwendung eine Authentifizierung auf Applikationsebene. So kann sich im ersten Schritt jeder Client mit dem Chat WebSocket verbinden. Danach ist dieser aufgefordert eine \texttt{AUTH\_REQUEST} Nachricht mit seinem JWT zu verwenden. Das Token wird wie gewohnt geprüft. Erst dann wird der bereits geöffnete WebSocket zur Liste der authentifizierten Nutzer hinzugefügt und kann künftig Nachrichten erhalten.
+
+
+\subsubsection{Deployment}
+
+Das Deployment Target ist Cloud Run. Hinweise hierzu finden sich in \autoref{sec:app-deployment}.
+
+
+\subsection{Like-Microservice}
+
+% Deployment target: App Engine > comparison to Cloud Run
+% Storage: BigTable (emulator available but not fully usable)
+
+\enquote{Gefällt mir} Angaben haben über die Jahre wortwörtlich die Herzen der Nutzer erobert. Wir gehen deshalb davon aus, dass ein großer Teil der API Anfragen auf diese Domäne zurück zu führen sein wird. Im Umkehrschluss muss diese also individuell skalieren können. 
+
+Als Deployment Target ist aus rein experimentellen Gründen die Google App Engine vorgesehen. In Produktion würde auch dieser Microservice per Cloud Run bereitgestellt werden, so mal er bereits als Container Image vorliegt (vgl. \autoref{sec:app-deployment}).
+
+Nennenswert ist zuletzt der gewählte Datenbank-Typ. Es handelt sich hierbei um Google Cloud BigTable, ein weiteres noSQL Produkt mit extrem niedriger Latenz und skalierbar bis auf Millionen Anfragen pro Sekunde. Im Kontext von \enquote{Gefällt mir} Angaben kann man sich die BigTable wie eine Excel Kalkulationstabelle vorstellen: für verschiedenen Angebote (Zeile) wird der \enquote{Gefällt mir} Zustand (Zelle) eines jeweiligen Nutzers (Spalte) nieder geschrieben. Dabei kann der Zustand der \enquote{Gefällt mir} Angabe durch einen Integer repräsentiert werden (\texttt{1 = Like} / \texttt{0 = Neutral} / \texttt{-1 = Dislike}). Die Angaben pro Angebot können durch die von Google bereitgestellten MapReduce Operationen effizient aggregiert werden.
+
+
 \section{Recommender Cloud Function} % Savina
-Wenn ein neues Angebot erstellt wird, sollen diejenigen Nutzer per Chat-Nachricht benachrichtigt werden, die die jeweilige Rasse abonniert haben. Dies erfolgt mithilfe einer Publisher/Subscriber-getriggerten Google Cloud Function.
-Wir haben uns für dieses Modell entschieden, da es sich bei der Recommendation um ein nicht-zeitkritisches Feature handelt.
-Um die Nachricht zu senden, wurde ein Recommendation-Bot implementiert, der den jeweiligen Benutzern per Chatnachricht die Rasse sowie den Link zum neuen Angebot schickt.
-Das Publishen erfolgt durch den App Microservice. Die Recommender Function stellt anschließend einen GET-Request an den App Microservice, um die betroffenen User zu bekommen. Dann wird für jeden betroffenen User ein GET-Request an den Chat Microservice gestellt, um zu prüfen, ob bereits ein Chat zwischen dem Bot und dem User existiert. Falls nein, wird ein neuer Chat angelegt. Anschließend wird die Nachricht in diesem Chat gesendet.
-
-
 % Deployment target: Cloud Functions > benefits? when is it most cost efficient (high/low traffic)?
 % Concept of using a dedicated DB view (vs. implementation of REST call [time-constraints])
 % Trigger via PubSub > benefit to other trigger methods?
 % Explain publishing via Google PubSub client form App Microservice
 % Async nature of recommendation (not time critical or required to synchronous response when creating a new offer)
 % Service token authentication (B2B communication)
+% @TODO: why cloud function?
+
+Gezeichnet von der Idee Benutzer über neue Angebote ihrer liebsten Rassen zu benachrichtigen, stellt die Cloud Recommender Function den einzigen Service dar, der nicht im Internet exponiert ist, d.h. keine frei zugängliche API hat. Stattdessen wird sie durch den Google Cloud PubSub Service ausgelöst. PubSub repräsentiert den asynchronen, ereignisgesteuerten Programmierstil bei dem Komponenten eines Systems Zustandsänderungen in Form von Events publizieren. Dabei ist im Allgemeinen nicht bekannt, welche anderen Komponenten diese Nachrichten empfangen werden oder wann sie diese verarbeiten. Letzteres stellt kein Problem dar, denn dieser Benachrichtigungs-Service wurde als nicht-zeitkritisches Feature definiert.
+
+Auch gibt es unterschiedliche Ansätze dazu, wie aussagekräftig ein solches Ereignis ist. In diesem Anwendungsfall wäre es also denkbar, das komplette neu eingetroffene Angebot oder nur die ID dessen via PubSub zu publizieren. Weiterhin benötigt der Service Kenntnis darüber, welche Nutzer die Rasse des Angebots abonniert haben. 
+
+Aktuell geht die Recommender Cloud Function davon aus, dass das komplette Angebot publiziert wird. Verantwortlich dafür ist der App-Microservice (siehe \autoref{sec:app-microservice}). Intern, realisiert dieser das zuverlässige Publishing via PubSub durch einen \texttt{post-save} Hook auf die \enquote{Angebote} Tabelle der Datenbank. Basierend auf der im Angebot enthaltenen Rasse, kann die Recommender Cloud Function dann eine Liste der abonnierten Benutzer vom App-Microservice abrufen. In Produktion sollte diese doppelte Kopplung zum App-Microservice vermieden werden. Diese kann durch eine replizierte read-only Datenbank Instanz oder einer speziell angepassten Datenbank-View durchbrochen werden. In jedem Fall, kann die Cloud Function dann die abonnierten Nutzer per Chat-Microservice (siehe \autoref{sec:chat-microservice}) benachrichtigen. Durch das publizieren des gesamten neuen Angebots kann eine umfangreiche Nachricht (Name, Bilder, URL, etc.) an die Nutzer konstruiert werden. 
+
 
 \section{Security} % Savina
-Wir haben bei der Implementierung darauf geachtet, dass wir als Betreiber sowie die Nutzer gegen die gängigsten Angriffsmethoden geschützt sind, sodass ein Abhören, Manipulieren oder Beschädigen nicht möglich ist. Im Folgenden werden unsere Lösungskonzepte vorgestellt.
+Bei der Implementierung wurde darauf geachtet, dass sowohl Betreiber als auch Nutzer gegen die gängigsten Angriffsvektoren geschützt sind. Das Abhören, Manipulieren oder Verletzen der Integrität von Daten darf nicht möglich sein. Im Folgenden werden entsprechende Lösungskonzepte präsentiert.
+
 
 \subsection{Verschlüsselung der Kommunikation}
-Eine unverschlüsselte Kommunikation der Nutzer mit einem Webserver öffnet Angriffen wie Man-in-the-Middle Attack, Cross-Site-Scripting (XSS) und Session Hijacking alle Türen. Wir nutzen ausschließlich HTTPS,
-wobei Webbrowser (Client) und Server mit einem nur für sie bekannten Schlüssel arbeiten.
-Somit läuft sämtliche Kommunikation verschlüsselt ab und ein Angreifer kann keine Informationen extrahieren, sofern er versuchen sollte, die Kommunikation abzuhören.
+Eine unverschlüsselte Kommunikation zwischen Nutzer und Webserver bietet Angriffen wie dem Man-in-the-Middle Attack, Cross-Site-Scripting (XSS) und Session Hijacking ein breites Spielwfeld. Wir nutzen ausschließlich HTTPS, wodurch sämtliche Kommunikation verschlüsselt von statten geht und ein Angreifer keine Informationen extrahieren kann ohne die dem Zertifikat zugrunde liegende Public-Key Kryptographie zu brechen.
+
 
 \subsection{Authentifizierung und Autorisierung}
 \label{sec:authentication}
-Nutzer, die unsere Applikation verwenden möchten, müssen sich als erstes mit ihrem Google-Konto anmelden. Hier macht Google Gebrauch von dem OAuth 2.0 Protokoll. Das von Google ausgestellte JWT-Token verwenden wir dazu, um eine authentifizierte Anfrage an den App Microservice zu stellen, der ein eigens erstelltes, neues JWT Token zurückgibt. Dieses Verfahren macht unsere Applikationen flexibler im Umgang mit potenziellen anderen Login-Verfahren, die in Zukunft implementiert werden könnten. Außerdem können wir unsere eigene Payload, zum Beispiel die selbst erstellte UUID des Nutzers codieren. Wir erstellen nämlich eine neue UUID, da es theoretisch möglich ist, dass eine von Google zugewiesene ID identisch mit einer ID sein kann, die eine andere Plattform ausstellt.
 
-Sämtliche Kommunikation mit den Services erfordert das Senden des von uns erstellten Tokens im \verb|Authorization| Header.
-Für zusätzliche Sicherheit stellen wir außerdem ein Refresh-Token aus, mit dem nach Ablauf der Gültigkeit des Access-Tokens (fünfzehn Minuten) über den App Service ein neues Token angefragt werden kann.
-Mit einem User-JWT-Token können Anfragen an den App Microservice, den Like Microservice und den Chat Microservice geschickt werden, beispielsweise um passende Tierangebote zu finden, Angebote zu erstellen oder Profilinformationen zu ändern. Ein Nutzer ist nicht dazu autorisiert, im Namen eines anderen Nutzers oder des Recommendation Bots Nachrichten zu versenden oder ein Angebot hochzuladen. Für administratorische Zwecke existiert ein entsprechendes Service Token. Der Recommendation Bot hat ebenfalls ein eigenes Token, hauptsächlich dafür, um eine Anfrage an den App Service zu stellen, der die Abonnentenliste für eine bestimmte Rasse aus der Datenbank zurückgibt.
+Die Nutzer Authentifizierung wurde ausführlich in \autoref{sec:frontend-auth} und \autoref{sec:app-backend-auth} ausgelegt. Sämtliche Kommunikation mit denen im Internet exponierten Services erfordert somit das Ausweisen der Identität, indem die von uns erstellen JWTs der jeweiligen Anfrage beigelegt werden müssen. Die Dauer der Gültigkeit der Access-Token ist frei konfigurierbar, standardmäßig jedoch auf 5 Minuten gesetzt. Auch die Authentifizierung unter den Services ist geregelt und erfordert spezielle Service Tokens. Jeder Microservice verwaltet hierzu eigenständig eine Whitelist und kann den Tokens darin eine Identität zuschreiben, wie z.B. der des Recommender Bot. 
+
+Auch die Authorisierung, also der Vorgang, ob ein gewisser Nutzer eine bestimmte Aktion ausführen darf, liegt im Verantwortungsbereich der Microservices. So darf beispielsweise kein Nutzer im Namen eines Anderen Nachrichten versenden oder Angebote hochladen.
 
 
 \subsection{Weitere Lösungen}
-Unsere Applikation implementiert weitere Mechanismen zur Gewährleistung der Sicherheit.
+Weitere Mechanismen zur Gewährleistung der Sicherheit sind:
 
 \begin{itemize}
-    \item Der Datenbankzugriff erfolgt ausschließlich vom App Microservice über Django Queries. Die Querysets von Django sind vor SQL-Injektion geschützt, da ihre Abfragen mit Hilfe von Query-Parametrisierung konstruiert werden. Der SQL-Code einer Abfrage wird getrennt von den Parametern der Abfrage definiert. Da Parameter vom Benutzer bereitgestellt werden können und daher unsicher sind, werden sie vom zugrunde liegenden Datenbanktreiber escaped.~\cite{django-security}
-    \item Im App Microservice haben wir die \verb|CSRF-Middleware| manuell aktiviert, die einen Schutz gegen Request Forgeries von anderen Seiten implementiert.
-    \item Da wir grundsätzlich keinen User-Input in das Dateisystem einfügen, können Directory Traversal-Angriffe in unserer Applikation nicht stattfinden.
+    \item Datenbankzugriffe erfolgen im App-Microservice ausschließlich über Django Queries. Diese sind vor SQL-Injektion geschützt, da ihre Abfragen mit Hilfe von Query-Parametrisierung konstruiert werden. Der SQL-Code einer Abfrage wird getrennt von den Parametern der Abfrage definiert. Da Parameter vom Benutzer bereitgestellt werden können und deshalb als unsicher gelten, werden sie vom zugrunde liegenden Datenbanktreiber escaped.~\cite{django-security}
+    \item Im App-Microservice wurde eine Middleware eingerichtet, die Schutz gegen Cross-Site Request Forgery (CSRF) bietet.
+    \item Da grundsätzlich kein User-Input in das Dateisystem einfügt wird, können Directory Traversal-Angriffe nicht stattfinden.
 \end{itemize}
 
 % Use table of attack vectors and detail how a protection mechanism was implemented
 
-\section{Scaling} % Klaus
+%\section{Scaling} % Klaus
 % Load Balancer setup with serverless network endpoint groups > enables individual scaling
 % Services and buckets may be deployed to multiple regions > LB decides which is the closets
 % Some cloud resources must be in the same region in order to communicate > implications?
@@ -264,31 +351,23 @@ Unsere Applikation implementiert weitere Mechanismen zur Gewährleistung der Sic
 % Stateless REST enables horizontal scaling
 
 
-\section{Continuous Integration und Continuous Delivery} % Arne + Nik
-\paragraph{}
-Bei Bau und Bereitstellung der verschiedenen Teile unserer Anwendung haben wir uns die Möglichkeiten der Continuous Integration sowie der Continuous Delivery (CI/CD) zu Nutze gemacht. Dies erschien uns als natürlicher Schritt, da GitHub, welches wir zur Versionsverwaltung genutzt haben, diese Konzepte selbst unterstützt. Über die sogenannten GitHub Actions kann der Code per CI/CD gebaut und bereitgestellt werden, ohne dass hierfür eine separate Plattform eingerichtet werden muss. Wir haben uns dazu entschieden, die notwendigen Dateien (Dockerfile u.ä.) im selben Projekt wie den Quellcode zu halten. Diese Entwicklungsmethode ist als "{Docker-Native}"{ }bekannt und zielt darauf ab, die Docker-Dateien an den Quellcode zu koppeln und die Verwaltung zu vereinfachen.
+\section{Continuous Integration und Delivery} % Arne + Nik
 
-Für die Bereitstellung selbst haben wir das YAML-Format verwendet, mit dem sich die gewünschten Ressourcen als eine Art Skript beschreiben lassen. Dieses können die Cloud-Dienste dann für die automatische Provisionierung der Hardware benutzen.
+Beim Build und Deployment der verschiedenen Komponenten unserer Anwendung haben wir den Ansatz der Continuous Integration sowie der Continuous Delivery (CI/CD) verfolgt. Das bedeutet, neu eingecheckter Code wird kontinuierlich gegen existierenden geprüft, indem hierfür, sofern vorhanden, jedes Mal eine extensive Test Suite durchlaufen wird. Fehlerhafte Builds werden somit markiert und Pull Requests frühzeitig blockiert. Daneben lassen sich in diesem Integrations-Verfahren auch andere Schritte wie das Prüfen auf einen Styleguide oder Linter kombinieren. Basierend auf diesen ersten Qualitäts-Indikatoren, lässt sich eine Pipeline zur automatischen, kontinuierlichen Bereitstellung des neu eingecheckten Codes einrichten. 
 
-Eine Schwierigkeit, die uns beim Bereitstellen der Microservices, die Cloud Run benutzen, aufgefallen ist, ist dass das System es offenbar nicht erlaubt, eine SSH-Sitzung in einem laufenden Container zu starten. Für die Bereitstellung ließ sich dieses Problem umgehen, da alle hierfür erforderlichen Konsolenbefehle sowieso in der YAML-Datei definiert werden müssen, um automatische ausgeführt werden zu können. Für die Wartung im laufenden Betrieb ergibt sich jedoch das Problem, dass keine Fehleranalyse stattfinden kann, da nicht auf die Fehlermeldungen zugegriffen werden kann. Hier wird eine ausgefeiltere Logging-Methode benötigt werden, um den reibungslosen Betrieb sicherzustellen. Uns ist Weiterhin bekannt, dass andere Cloud-Anbieter diese Möglichkeit sehr wohl zur Verfügung stellen. Dies wird sicherlich einen Einfluss auf die Wahl der Plattform für zukünftige Cloud-Projekte haben.
+Mit GitHub Actions können beide dieser Konzepte umgesetzt werden. Denn neben der Git-basierten Versionierung von Code oder kollaborativen Tools wie Issues, Projects, Teams etc., bietet GitHub neuerdings einen kostenlosen Dienst an, um CI/CD an die Breite Masse seiner Open-Source Entwickler zu bringen. Die dafür notwendige Konfiguration wird samt Quellcode verwaltet. Allgemein tun wir das auch mit sonstigen Build Artefakten wie z.B. der Dockerfile oder Deployment Spezifikation eines jeden Microservices. Hierdurch gelingt uns ein vollumfängliches Bild zu jeder Version der Software, inklusive der Umgebung und Beschreibung wie diese Software gebaut und bereitgestellt wurde. 
 
-% \subsubsection{Continious Delivery, Continious Integration}
 
-% Mit den GitHub Actions stellt GitHub eine virtuelle Maschine zur Verfügung, die es ermöglicht, Aktionen nach einem Push oder Pull Request auszuführen. Für das Frontend wird nach jedem Push ein \verb|ionic build --prod| ausgeführt und der dabei entstandene Build Ordner in den Google Cloud Bucket hochgeladen. Somit reicht ein \verb|git push|-Befehl oder ein Pull-Request aus, um ein vollständiges Deployment durchzuführen
+\section{Kostenanalyse}
 
-\section{Kostenanalyse} % Klaus
-% Cost per month in relation to requests / users per month
-
-Um die Kosten für eine bestimmte Anzahl Benutzern zu berechnen, müssen zuvor einige Annahmen getroffen werden.
 
 \subsection{Annahmen zum Nutzerverhalten}
-Verglichen mit anderen Plattformen, treffen wir die Annahme, dass es im Wesentlichen zwei Nutzergruppen gibt. Eine Gruppe nutzt die Anwendung hauptsächlich zum Stöbern und Kaufen, die andere Gruppe nutzt die Anwendung zum Anbieten von Tieren. Ein kleiner Anteil der Benutzer wird sowohl kaufen als auch verkaufen. So kommen wir zu der Annahme, dass ein Benutzer im Durchschnitt zwei Inserate online hat. 
 
-Weiterhin gehen wir davon aus, dass jedes Angebot im Durchschnitt zwei Bilder und ein Video beinhaltet, was bei einer Größe von zwei MB pro Bild und 16 MB pro Video zu einem Gesamtspeicherplatz von etwa 20 MB pro Angebot führt.
+Verglichen mit anderen Plattformen, treffen wir die Annahme, dass es im Wesentlichen zwei Nutzergruppen gibt. Eine Gruppe nutzt die Anwendung vor allem zum Stöbern und Kaufen (\enquote{Interessenten}), die Andere nutzt sie zum Anbieten von Tieren (\enquote{Verkäufer}). Ein kleiner Anteil der Benutzer wird in beiden Rollen agieren. So kommen wir zu der Annahme, dass ein Benutzer im Durchschnitt zwei Inserate zu jedem Zeitpunkt online hat. Weiterhin gehen wir davon aus, dass jedes Angebot im Durchschnitt zwei Bilder und ein Video beinhaltet, was bei einer Größe von 2 MB pro Bild und 16 MB pro Video zu einem Gesamtspeicherplatz von etwa 20 MB pro Angebot führt.
 
 Um den Datenverkehr zu berechnen, gehen wir davon aus, dass ein registrierter Benutzer pro Tag ein Angebot aufruft sowie fünf mal die Startseite besucht. Diese Zahl haben wie etwas höher angesetzt, da auch nicht registrierte Benutzer die Startseite aufrufen können und die Anzahl dieser Aufrufe schwierig vorherzusagen sind.
 
-Zusammengefasst haben wir folgende Parameter festgelegt:
+Tabelle \ref{tab:Parameters} fasst diese Annahmen zusammen. 
 
 \begin{center}\label{tab:Parameters}
 \begin{tabular}{|l|l|}
@@ -303,43 +382,43 @@ Zusammengefasst haben wir folgende Parameter festgelegt:
 \end{tabular}    
 \end{center}
 
-Aus den Werten der Tabelle \ref{tab:Parameters} kann man mithilfe des Google Cloud Platform-Preisrechners berechnen, welche Cloud Services welche Kosten verursachen.~\cite{google-pricing}
+\subsection{Auswertung}
 
-\begin{figure}[htbp]
+Basierend auf den Werten in Tabelle \ref{tab:Parameters} kann man mit Hilfe des Google Cloud Platform Preisrechners einen ersten Kostenvoranschlag für die in unserem Projekt verwendeten Cloud Services erhalten~\cite{google-pricing}.
+
+\FloatBarrier
+
+\begin{figure}[H]
 \centering
 \label{fig:pricingUsers}
 \includegraphics[width=\textwidth]{images/pricing-users}
 \caption{Kostenanteil der einzelnen Services}
 \end{figure}
 
-Abbildung \ref{fig:pricingUsers} zeigt den Kostenanteil der Cloud Services im Verhältnis zu den Gesamtkosten.
+Abbildung \ref{fig:pricingUsers} zeigt den Kostenanteil der Cloud Services im Verhältnis zu den Gesamtkosten. Hier ist besonders auffällig, dass mit steigender Zahl der Benutzer die Kosten für die App Engine einen größeren Anteil an den Gesamtkosten nehmen.
 
-\begin{figure}[htbp]
-\centering
-\label{fig:totalCost}
-\includegraphics[width=\textwidth]{images/total-cost}
-\caption{Gesamtkosten gruppiert nach Nutzerzahl}
-\end{figure}
+\FloatBarrier
 
-\begin{figure}[htbp]
+\begin{figure}[H]
 \centering
 \label{fig:costPerUser}
 \includegraphics[width=\textwidth]{images/cost-per-user}
-\caption{Gesamtkosten gruppiert nach Nutzerzahl}
+\caption{Gesamtkosten pro Benutzer gruppiert nach Nutzeranzahl}
 \end{figure}
 
+Um eine aussagekräftige Aussage zu den Gesamtkosten zu machen, haben wir in Abbildung \ref{fig:costPerUser} die Kosten pro Benutzer in der jeweiligen Gruppe berechnet. Hier ist deutlich erkennbar, dass die Kosten pro Benutzer mit steigender Anzahl immer geringer werden. Das liegt vor allem daran, dass gewisse Cloud-Dienste unabhängig von der Anzahl der Benutzer, also als Fixpreis, berechnet werden. Mit steigender Zahl der Benutzer sinken somit die Fixkosten und damit auch die Gesamtkosten pro Benutzer.
 
-
-
+\newpage
 
 \appendix
+
 % Swagger Docs (JSON export / links to production)
 % Screenshots
 % Larger architecture diagrams
 % Individual service diagrams
 % Google Cloud specific deployment diagram
 
-
+\newpage
 
 \bibliography{sources.bib}{}
 \bibliographystyle{plain}
